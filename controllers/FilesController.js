@@ -2,6 +2,7 @@ import fs from 'fs';
 import { ObjectId } from 'mongodb';
 import { promisify } from 'util';
 import { v4 as uuidv4 } from 'uuid';
+import mime from 'mime-types';
 import redisClient from '../utils/redis';
 import dbClient from '../utils/db';
 
@@ -32,6 +33,7 @@ export async function postUpload(req, res) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
+
   const { name } = req.body;
   if (!name) {
     return res.status(400).json({ error: 'Missing name' });
@@ -54,7 +56,7 @@ export async function postUpload(req, res) {
     return res.status(400).json({ error: 'Parent not found' });
   }
 
-  if (parentId !== 0) {
+  if (parentId !== '0') {
     const parentFolder = await dbClient.findOne('files', {
       _id: parentId,
     });
@@ -67,7 +69,8 @@ export async function postUpload(req, res) {
     }
   }
 
-  const isPublic = req.body.isPublic ? req.body.isPublic : false;
+  const isPublic = req.body.isPublic === true;
+
 
   if (type === 'folder') {
     const folder = {
@@ -78,17 +81,19 @@ export async function postUpload(req, res) {
       parentId,
     };
 
-    await dbClient.insertOne('files', folder);
+    const { insertedId } = await dbClient.insertOne('files', folder);
+    folder._id = insertedId;
 
     return res.status(201).json({
       id: folder._id.toString(),
-      user: user._id.toString(),
+      userId: user._id.toString(),
       name,
       type,
       isPublic,
       parentId: parentId !== '0' ? parentId.toString() : 0,
     });
   }
+
 
   const folderPath = process.env.FOLDER_PATH || '/tmp/files_manager';
   await promisify(fs.mkdir)(folderPath, { recursive: true });
@@ -108,11 +113,12 @@ export async function postUpload(req, res) {
     localPath,
   };
 
-  await dbClient.insertOne('files', file);
+  const { insertedId } = await dbClient.insertOne('files', file);
+  file._id = insertedId;
 
   return res.status(201).json({
     id: file._id.toString(),
-    user: user._id.toString(),
+    userId: user._id.toString(),
     name,
     type,
     isPublic,
@@ -128,10 +134,15 @@ export async function getShow(req, res) {
 
   const fileId = req.params.id;
 
-  const file = await dbClient.findOne('files', {
-    _id: new ObjectId(fileId),
-    userId: user._id,
-  });
+  let file;
+  try {
+    file = await dbClient.findOne('files', {
+      _id: new ObjectId(fileId),
+      userId: user._id,
+    });
+  } catch (err) {
+    return res.status(404).json({ error: 'Not found' });
+  }
 
   if (!file) {
     return res.status(404).json({ error: 'Not found' });
@@ -143,7 +154,8 @@ export async function getShow(req, res) {
     name: file.name,
     type: file.type,
     isPublic: file.isPublic,
-    parentId: file.parentId.toString(),
+    parentId:
+      file.parentId === '0' ? 0 : file.parentId.toString(),
   });
 }
 
@@ -292,4 +304,43 @@ export async function unpublish(req, res) {
     parentId:
       updatedFile.parentId === '0' ? 0 : updatedFile.parentId.toString(),
   });
+}
+
+export async function getFile(req, res) {
+  const fileId = req.params.id;
+
+  let file;
+  try {
+    file = await dbClient.findOne('files', {
+      _id: new ObjectId(fileId),
+    });
+  } catch (err) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+
+  if (!file) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+
+  if (!file.isPublic) {
+    const user = await getUser(req);
+    if (!user || user._id.toString() !== file.userId.toString()) {
+      return res.status(404).json({ error: 'Not found' });
+    }
+  }
+
+  if (file.type === 'folder') {
+    return res.status(400).json({ error: 'A folder doesn\'t have content' });
+  }
+
+  const readFile = promisify(fs.readFile);
+  try {
+    const data = await readFile(file.localPath);
+
+    return res
+      .set('Content-Type', mime.lookup(file.name))
+      .send(data);
+  } catch (err) {
+    return res.status(404).json({ error: 'Not found' });
+  }
 }

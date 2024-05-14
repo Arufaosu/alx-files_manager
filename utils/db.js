@@ -49,5 +49,10 @@ class DBClient {
   }
 }
 
+async deleteOne(coll, filter) {
+    return this.db.collection(coll).deleteOne(filter);
+  }
+}
+
 const dbClient = new DBClient();
 export default dbClient;
