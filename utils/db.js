@@ -47,9 +47,8 @@ class DBClient {
   async deleteMany(coll, filter) {
     return this.db.collection(coll).deleteMany(filter);
   }
-}
 
-async deleteOne(coll, filter) {
+  async deleteOne(coll, filter) {
     return this.db.collection(coll).deleteOne(filter);
   }
 }
