@@ -3,8 +3,11 @@ import { ObjectId } from 'mongodb';
 import { promisify } from 'util';
 import { v4 as uuidv4 } from 'uuid';
 import mime from 'mime-types';
+import Queue from 'bull';
 import redisClient from '../utils/redis';
 import dbClient from '../utils/db';
+
+const fileQueue = new Queue('fileQueue');
 
 async function getUser(req) {
   const token = req.headers['x-token'];
@@ -51,7 +54,9 @@ export async function postUpload(req, res) {
 
   let parentId;
   try {
-    parentId = req.body.parentId && req.body.parentId !== '0' ? new ObjectId(req.body.parentId) : '0';
+    parentId = req.body.parentId && req.body.parentId !== '0'
+      ? new ObjectId(req.body.parentId)
+      : '0';
   } catch (err) {
     return res.status(400).json({ error: 'Parent not found' });
   }
@@ -116,6 +121,13 @@ export async function postUpload(req, res) {
   const { insertedId } = await dbClient.insertOne('files', file);
   file._id = insertedId;
 
+  if (type === 'image') {
+    fileQueue.add({
+      userId: user._id,
+      fileId: file._id,
+    });
+  }
+
   return res.status(201).json({
     id: file._id.toString(),
     userId: user._id.toString(),
@@ -154,8 +166,7 @@ export async function getShow(req, res) {
     name: file.name,
     type: file.type,
     isPublic: file.isPublic,
-    parentId:
-      file.parentId === '0' ? 0 : file.parentId.toString(),
+    parentId: file.parentId === '0' ? 0 : file.parentId.toString(),
   });
 }
 
@@ -167,13 +178,10 @@ export async function getIndex(req, res) {
 
   let parentId;
   try {
-    parentId = req.query.parentId && req.query.parentId !== '0' ? new ObjectId(req.query.parentId) : '0';
+    parentId = req.query.parentId && req.query.parentId !== '0'
+      ? new ObjectId(req.query.parentId)
+      : '0';
   } catch (err) {
-    return res.json([]);
-  }
-
-  const page = req.query.page ? Number(req.query.page) : 0;
-  if (!(page >= 0)) {
     return res.json([]);
   }
 
@@ -183,8 +191,23 @@ export async function getIndex(req, res) {
   };
 
   if (parentId !== '0') {
-    matchQuery.parentId = parentId;
+    try {
+      const folder = await dbClient.findOne('files', {
+        _id: parentId,
+        userId: user._id,
+      });
+
+      if (!folder) {
+        throw new Error('Not found');
+      }
+
+      matchQuery.parentId = parentId;
+    } catch (err) {
+      return res.json([]);
+    }
   }
+
+  const page = Number(req.query.page) || 0;
 
   const files = await filesCollection
     .aggregate([
@@ -330,16 +353,20 @@ export async function getFile(req, res) {
   }
 
   if (file.type === 'folder') {
-    return res.status(400).json({ error: 'A folder doesn\'t have content' });
+    return res.status(400).json({ error: "A folder doesn't have content" });
   }
 
   const readFile = promisify(fs.readFile);
   try {
-    const data = await readFile(file.localPath);
+    let filePath = file.localPath;
+    const { size } = req.query;
 
-    return res
-      .set('Content-Type', mime.lookup(file.name))
-      .send(data);
+    if (size) {
+      filePath = `${file.localPath}_${size}`;
+    }
+    const data = await readFile(filePath);
+
+    return res.set('Content-Type', mime.lookup(file.name)).send(data);
   } catch (err) {
     return res.status(404).json({ error: 'Not found' });
   }

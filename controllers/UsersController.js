@@ -1,7 +1,10 @@
 import { ObjectId } from 'mongodb';
 import sha1 from 'sha1';
+import Queue from 'bull';
 import dbClient from '../utils/db';
 import redisClient from '../utils/redis';
+
+const userQueue = new Queue('userQueue');
 
 export async function postNew(req, res) {
   const email = req.body ? req.body.email : null;
@@ -24,14 +27,17 @@ export async function postNew(req, res) {
     res.end();
     return;
   }
+
   const insertInfo = await dbClient.db.collection('users').insertOne({
     email,
     password: sha1(password),
   });
 
-  const userID = insertInfo.insertedId.toString();
+  const userId = insertInfo.insertedId;
 
-  res.status(201).json({ id: userID, email });
+  userQueue.add({ userId });
+
+  res.status(201).json({ id: userId.toString(), email });
 }
 
 export async function getMe(req, res) {
